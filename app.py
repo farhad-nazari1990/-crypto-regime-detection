@@ -66,7 +66,18 @@ def load_data():
 
 def merge_price_regime(btc, regimes):
     """Merge BTC prices with regime labels."""
-    df = btc.merge(regimes, on='date', how='left')
+    
+    df = btc.merge(regimes, on='date', how='left', suffixes=('', '_regime'))
+    
+    # اگر ستون close خراب شده باشد، اصلاحش کن
+    if 'close' not in df.columns:
+        if 'close_x' in df.columns:
+            df.rename(columns={'close_x': 'close'}, inplace=True)
+        elif 'close_regime' in df.columns:
+            df.rename(columns={'close_regime': 'close'}, inplace=True)
+        else:
+            raise ValueError(f"'close' column missing after merge. Columns: {df.columns.tolist()}")
+    
     df = df.sort_values('date').reset_index(drop=True)
     return df
 
@@ -104,13 +115,20 @@ def backtest_regime_strategy(df, best_regime):
 def backtest_custom_allocation(df, regime_weights):
     """Backtest custom allocation across selected regimes."""
     df = df.copy()
-    df['custom_return'] = 0.0
     
+    # Custom strategy returns
+    df['custom_return'] = 0.0
     for regime, weight in regime_weights.items():
         df.loc[df['state'] == regime, 'custom_return'] += df['return'] * weight
     
     df['custom_cum'] = (1 + df['custom_return']).cumprod()
+    
+    # Buy & Hold (needed for plotting)
+    df['buy_hold_return'] = df['return']
+    df['buy_hold_cum'] = (1 + df['buy_hold_return']).cumprod()
+    
     return df
+
 
 def compute_sharpe(returns, periods_per_year=365):
     """Compute annualized Sharpe ratio."""
@@ -156,10 +174,9 @@ def plot_price_regime(df, cpd_indices):
             if idx < len(df):
                 fig.add_vline(
                     x=df.iloc[idx]['date'],
-                    line=dict(color='red', width=1, dash='dash'),
-                    annotation_text='Change Point',
-                    annotation_position='top'
+                    line=dict(color='red', width=1, dash='dash')
                 )
+
     
     fig.update_layout(
         title='Bitcoin Price with Market Regime Detection',
@@ -206,7 +223,7 @@ def plot_performance_comparison(perf):
     fig = go.Figure()
     
     fig.add_trace(go.Bar(
-        x=[f"Regime {int(r)}" for r in perf['regime']],
+        x=[f"Regime {int(r)}" for r in perf['state']],
         y=perf['sharpe_ratio'],
         marker_color=['#2ca02c' if s == perf['sharpe_ratio'].max() else '#1f77b4' 
                       for s in perf['sharpe_ratio']],
@@ -327,12 +344,12 @@ def generate_pdf_report(df, perf, duration_stats):
     story.append(Paragraph("<b>Performance by Regime</b>", styles['Heading2']))
     story.append(Spacer(1, 12))
     
-    perf_data = [['Regime', 'Sharpe Ratio', 'Mean Return', 'Volatility', 'Max Drawdown']]
+    perf_data = [['Regime', 'Sharpe Ratio', 'Mean Daily Return', 'Volatility', 'Max Drawdown']]
     for _, row in perf.iterrows():
         perf_data.append([
-            f"Regime {int(row['regime'])}",
+            f"Regime {int(row['state'])}",
             f"{row['sharpe_ratio']:.2f}",
-            f"{row['mean_return']:.4f}",
+            f"{row['mean_daily_return']:.4f}",
             f"{row['volatility']:.4f}",
             f"{row['max_drawdown']:.2%}"
         ])
@@ -355,7 +372,7 @@ def generate_pdf_report(df, perf, duration_stats):
     story.append(Paragraph("<b>Key Insights</b>", styles['Heading2']))
     story.append(Spacer(1, 12))
     
-    best_regime = perf.loc[perf['sharpe_ratio'].idxmax(), 'regime']
+    best_regime = perf.loc[perf['sharpe_ratio'].idxmax(), 'state']
     best_sharpe = perf['sharpe_ratio'].max()
     
     insights = [
@@ -381,7 +398,7 @@ def main():
     # Load data
     btc, regimes, cpd, perf = load_data()
     df = merge_price_regime(btc, regimes)
-    df = compute_returns(df)
+    # df = compute_returns(df)
     
     # Ensure required columns exist
     if 'sharpe_ratio' not in perf.columns:
@@ -421,7 +438,7 @@ def main():
         st.metric("Regimes Detected", int(num_regimes))
     
     with col4:
-        best_regime = perf.loc[perf['sharpe_ratio'].idxmax(), 'regime']
+        best_regime = perf.loc[perf['sharpe_ratio'].idxmax(), 'state']
         best_sharpe = perf['sharpe_ratio'].max()
         st.metric("Best Sharpe Regime", f"Regime {int(best_regime)} ({best_sharpe:.2f})")
     
@@ -492,9 +509,9 @@ def main():
     
     with col1:
         st.dataframe(
-            perf[['regime', 'sharpe_ratio', 'mean_return', 'volatility', 'max_drawdown', 'win_rate']].style.format({
+            perf[['state', 'sharpe_ratio', 'mean_daily_return', 'volatility', 'max_drawdown', 'win_rate']].style.format({
                 'sharpe_ratio': '{:.2f}',
-                'mean_return': '{:.4f}',
+                'mean_daily_return': '{:.4f}',
                 'volatility': '{:.4f}',
                 'max_drawdown': '{:.2%}',
                 'win_rate': '{:.2%}'
